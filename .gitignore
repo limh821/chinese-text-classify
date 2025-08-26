@@ -1,0 +1,37 @@
+# 忽略日志文件
+*.log
+
+# 忽略编译文件
+__pycache__/
+*.pyc
+
+# 忽略环境配置
+.env
+venv/
+
+# 忽略系统文件
+.DS_Store
+
+# 其他常见的忽略项（可选）
+*.tmp
+
+# --- 其他个性化忽略项 ---
+# 忽略完整数据
+full_data/
+
+# 忽略输出
+outputs/
+
+# 其他无关紧要的文件 
+final_model/
+final_model_components/
+other_models/
+
+# 大于100MB的模型文件
+models/
+
+# 忽略一些隐藏文件
+models/
+models/chinese-roberta-wwm-ext/pytorch_model.bin
+best_text_model.bin
+*.bin

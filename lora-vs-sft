@@ -1,0 +1,10 @@
+
+模型训练 2025.08.20结论：
+
+关于sft和lora微调的效果对比：
+
+1、相同的batch_size，lora微调比sft收敛更快，前者5个epoch即可以收敛，后者要15个epoch
+
+2、lora在epoch超过10后容易发生过拟合（train accuracy升高，但是validation accuracy没有升高），需要结合正则化和其他手段减少过拟合，进一步提升训练结果。
+
+
