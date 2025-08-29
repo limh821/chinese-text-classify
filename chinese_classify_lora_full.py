@@ -36,6 +36,10 @@
     这一版是最终版代码。
 
     by 李明华，2025-08-26.
+
+    对分层抽样模块做了优化，提升了百万级文本的分层抽样速度。
+    by 李明华，2025-08-29.
+
 '''
 
 
@@ -61,6 +65,7 @@ import time
 import os
 import pandas as pd
 from sklearn.model_selection import train_test_split
+from collections import defaultdict
 import re
 import jieba
 
@@ -200,10 +205,9 @@ def load_and_split_data(file_path, test_size=0.2, random_state=42):
 
     return train_df, val_df
 
-
-def create_mini_dataset_in_memory(original_file, max_samples=1000, random_state=42):
+def create_mini_dataset_fast(original_file, max_samples=1000, random_state=42):
     """
-    在内存中创建小型训练子集，保持原始标签分布
+    高效地在内存中创建小型训练子集，保持原始标签分布
     参数:
         original_file: 原始训练集文件路径
         max_samples: 子集最大样本数
@@ -212,34 +216,114 @@ def create_mini_dataset_in_memory(original_file, max_samples=1000, random_state=
         mini_df: 包含采样后数据的小型DataFrame
     """
     # 读取原始数据
+    print("正在读取数据...")
+    start_time = time.time()
     df = pd.read_csv(original_file, sep='\t', header=None, names=['text', 'label'])
-    print(f"原始训练集大小： {len(df)} 条")
-    print(f"均匀采样生成大小为 {max_samples} 条的 mini train set ")
+    load_time = time.time() - start_time
+    print(f"原始训练集大小：{len(df)} 条，读取耗时：{load_time:.2f}秒")
+    print(f"开始分层抽样生成大小为 {max_samples} 条的 mini train set")
 
-    # 计算每个类别应抽取的样本数（按原始比例）
-    label_counts = df['label'].value_counts(normalize=True)
-    samples_per_label = (label_counts * max_samples).round().astype(int)
-
-    # 确保总数不超过max_samples
-    while samples_per_label.sum() > max_samples:
-        max_label = samples_per_label.idxmax()
-        samples_per_label[max_label] -= 1
-
-    # 分层抽样
-    mini_samples = []
-    for label, count in samples_per_label.items():
-        label_samples = df[df['label'] == label].sample(count, random_state=random_state)
-        mini_samples.append(label_samples)
-
-    # 合并并打乱顺序
-    mini_df = pd.concat(mini_samples).sample(frac=1, random_state=random_state)
+    # 使用优化后的分层抽样函数
+    start_sample_time = time.time()
+    mini_df = optimized_stratified_sample(df, 'label', max_samples, random_state)
+    sample_time = time.time() - start_sample_time
 
     # 打印统计信息
-    print(f"\n创建内存中的小型训练子集: 共 {len(mini_df)} 条样本")
+    print(f"\n创建内存中的小型训练子集完成: 共 {len(mini_df)} 条样本，抽样耗时：{sample_time:.2f}秒")
     print("标签分布:")
     print(mini_df['label'].value_counts())
+    print(f"抽样前后比例一致性检查:")
+    original_prop = df['label'].value_counts(normalize=True).sort_index()
+    sampled_prop = mini_df['label'].value_counts(normalize=True).sort_index()
+    for label in original_prop.index:
+        if label in sampled_prop:
+            diff = abs(original_prop[label] - sampled_prop[label])
+            print(
+                f"  标签 {label}: 原始 {original_prop[label]:.3f} -> 抽样 {sampled_prop[label]:.3f} (差异: {diff:.3f})")
 
     return mini_df
+
+
+def optimized_stratified_sample(df, label_col, n_samples, random_state=None):
+    """
+    高效的分层抽样函数，专门优化用于文本数据
+    """
+    if n_samples >= len(df):
+        return df.copy()
+
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    # 1. 预先获取所有标签（向量化操作）
+    all_labels = df[label_col].values
+
+    # 2. 使用numpy高效计算类别索引
+    unique_classes, class_counts = np.unique(all_labels, return_counts=True)
+    class_indices = {}
+
+    # 一次性构建所有类别的索引映射
+    for i, class_val in enumerate(unique_classes):
+        # 使用numpy的where函数比循环更快
+        class_indices[class_val] = np.where(all_labels == class_val)[0]
+
+    # 3. 计算每个类别的抽样数量（保持比例）
+    total_count = len(df)
+    sample_sizes = {}
+
+    for class_val in unique_classes:
+        class_count = len(class_indices[class_val])
+        sample_sizes[class_val] = max(1, int(n_samples * class_count / total_count))
+
+    # 4. 调整样本总数
+    total_selected = sum(sample_sizes.values())
+    if total_selected != n_samples:
+        # 按类别大小排序调整
+        diff = n_samples - total_selected
+        # 按类别大小降序排列
+        sorted_classes = sorted([(cls, len(class_indices[cls])) for cls in unique_classes],
+                                key=lambda x: x[1], reverse=True)
+
+        for cls, count in sorted_classes:
+            if diff == 0:
+                break
+            current_size = sample_sizes[cls]
+            available = count - current_size
+            if available > 0:
+                to_add = min(diff, available)
+                sample_sizes[cls] += to_add
+                diff -= to_add
+
+    # 5. 收集抽样索引（使用numpy随机选择）
+    sampled_indices = []
+    for class_val in unique_classes:
+        size = sample_sizes[class_val]
+        indices = class_indices[class_val]
+
+        if size > 0:
+            if len(indices) > size:
+                selected = np.random.choice(indices, size=size, replace=False)
+                sampled_indices.extend(selected)
+            else:
+                sampled_indices.extend(indices)
+
+    # 6. 如果样本不足，补充随机样本（确保总数正确）
+    if len(sampled_indices) < n_samples:
+        all_indices = np.arange(len(df))
+        used_mask = np.isin(all_indices, sampled_indices)
+        remaining_indices = all_indices[~used_mask]
+
+        extra_needed = n_samples - len(sampled_indices)
+        if len(remaining_indices) > 0:
+            extra_selected = np.random.choice(remaining_indices,
+                                              size=min(extra_needed, len(remaining_indices)),
+                                              replace=False)
+            sampled_indices.extend(extra_selected)
+
+    # 7. 创建结果DataFrame并打乱顺序
+    result_df = df.iloc[sampled_indices].copy()
+    result_df = result_df.sample(frac=1, random_state=random_state).reset_index(drop=True)
+
+    return result_df
 
 def load_and_split_THUCNews_data(file_path, test_size=0.2, random_state=42):
     """加载CSV数据并分割为训练集和验证集"""
@@ -281,6 +365,148 @@ def load_and_split_THUCNews_data(file_path, test_size=0.2, random_state=42):
     print(val_df['label'].value_counts())
 
     return train_df, val_df
+
+
+def optimized_stratified_sample(df, label_col, n_samples, random_state=None):
+    """
+    高效的分层抽样函数，结合CIFAR10实现的优点
+    """
+    if n_samples >= len(df):
+        return df.copy()
+
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    # 1. 预先获取所有标签（向量化操作）
+    all_labels = df[label_col].values
+
+    # 2. 使用numpy高效计算类别索引
+    unique_classes = np.unique(all_labels)
+    class_indices = defaultdict(list)
+
+    # 一次性构建所有类别的索引映射
+    for idx, label in enumerate(all_labels):
+        class_indices[label].append(idx)
+
+    # 3. 计算每个类别的抽样数量（保持比例）
+    value_counts = {cls: len(indices) for cls, indices in class_indices.items()}
+    total_count = len(df)
+
+    # 计算理论抽样数量
+    sample_sizes = {}
+    for cls, count in value_counts.items():
+        sample_sizes[cls] = max(1, int(n_samples * count / total_count))
+
+    # 4. 调整样本总数
+    total_selected = sum(sample_sizes.values())
+    if total_selected != n_samples:
+        # 按类别大小排序调整
+        diff = n_samples - total_selected
+        sorted_classes = sorted(value_counts.items(), key=lambda x: x[1], reverse=True)
+
+        for cls, count in sorted_classes:
+            if diff == 0:
+                break
+            available = count - sample_sizes[cls]
+            if available > 0:
+                to_add = min(diff, available)
+                sample_sizes[cls] += to_add
+                diff -= to_add
+
+    # 5. 收集抽样索引（使用numpy随机选择）
+    sampled_indices = []
+    for cls in unique_classes:
+        size = sample_sizes.get(cls, 0)
+        if size > 0:
+            indices = class_indices[cls]
+            if len(indices) > size:
+                selected = np.random.choice(indices, size=size, replace=False)
+                sampled_indices.extend(selected)
+            else:
+                sampled_indices.extend(indices)
+
+    # 6. 如果样本不足，补充随机样本
+    if len(sampled_indices) < n_samples:
+        all_possible_indices = set(range(len(df)))
+        used_indices = set(sampled_indices)
+        remaining_indices = list(all_possible_indices - used_indices)
+        extra_needed = n_samples - len(sampled_indices)
+
+        if remaining_indices:
+            extra_selected = np.random.choice(remaining_indices,
+                                              size=min(extra_needed, len(remaining_indices)),
+                                              replace=False)
+            sampled_indices.extend(extra_selected)
+
+    # 7. 创建结果DataFrame
+    result_df = df.iloc[sampled_indices].copy()
+    result_df = result_df.sample(frac=1, random_state=random_state).reset_index(drop=True)
+
+    return result_df
+
+
+# 针对PyTorch数据集的优化版本
+def stratified_sample_dataset(dataset, n_samples, random_state=None):
+    """
+    专门为PyTorch数据集优化的分层抽样
+    """
+    if n_samples >= len(dataset):
+        return list(range(len(dataset)))
+
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    # 预先获取所有标签
+    all_labels = []
+    for i in range(len(dataset)):
+        if hasattr(dataset, 'targets'):  # 对于标准数据集
+            label = dataset.targets[i]
+        else:
+            # 假设数据集返回 (data, label) 或 (data, label, id)
+            item = dataset[i]
+            if len(item) == 2:
+                _, label = item
+            else:
+                _, label, _ = item
+        all_labels.append(label if isinstance(label, int) else label.item())
+
+    all_labels = np.array(all_labels)
+
+    # 分层抽样
+    indices = []
+    unique_classes = np.unique(all_labels)
+
+    # 计算每个类别的样本数
+    samples_per_class = n_samples // len(unique_classes)
+    remainder = n_samples % len(unique_classes)
+
+    for class_idx in unique_classes:
+        class_mask = (all_labels == class_idx)
+        class_indices = np.where(class_mask)[0]
+
+        if len(class_indices) > 0:
+            # 分配样本数量（处理余数）
+            class_samples = samples_per_class
+            if remainder > 0:
+                class_samples += 1
+                remainder -= 1
+
+            selected = np.random.choice(class_indices,
+                                        size=min(class_samples, len(class_indices)),
+                                        replace=False)
+            indices.extend(selected.tolist())
+
+    # 补充随机样本（如果不足）
+    if len(indices) < n_samples:
+        all_indices = set(range(len(dataset)))
+        remaining_indices = list(all_indices - set(indices))
+        extra_needed = n_samples - len(indices)
+        extra_indices = np.random.choice(remaining_indices,
+                                         size=min(extra_needed, len(remaining_indices)),
+                                         replace=False)
+        indices.extend(extra_indices.tolist())
+
+    return indices
 
 
 def load_THUCNews_test(file_path):

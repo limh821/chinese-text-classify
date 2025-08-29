@@ -9,7 +9,6 @@
     train_ratio可以随意指定）分成训练集和测试集，同时需要保证测试集和训练集中各类标签的分布一致（即各类标签的比例要保持和原始text_dataset.csv中的比例一致）。
 
     by 李明华，2025-08-26.
-
 '''
 
 import os
@@ -68,14 +67,14 @@ def split_dataset_with_stratification(input_file, train_file, test_file, train_r
 
 if __name__ == "__main__":
     # 参数设置
-    input_dir = './data/THUCNews-mini/'
+    input_dir = '../data/THUCNews-mini/'
     input_file_name = 'train.txt'
     train_ratio = 0.8
     random_state = 42
     input_file = os.path.join(input_dir, input_file_name)
 
     # 结果输出
-    output_dir = './outputs/preprocessed_data'
+    output_dir = '../outputs/preprocessed_data'
     os.makedirs(output_dir, exist_ok=True)
     train_file = os.path.join(output_dir, 'train_dataset.csv')
     test_file = os.path.join(output_dir, 'test_dataset.csv')
