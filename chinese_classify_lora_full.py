@@ -330,7 +330,7 @@ def load_and_split_THUCNews_data(file_path, test_size=0.2, random_state=42):
     # 读取Tab分隔的.txt文件
     # df = pd.read_csv(file_path, sep='\t', header=None, names=['text', 'label'])
     # 创建小型训练子集，保持原始标签分布
-    df = create_mini_dataset_in_memory(file_path, max_samples=max_samples, random_state=42)
+    df = create_mini_dataset_fast(file_path, max_samples=max_samples, random_state=42)
 
     print(f"训练集 {file_path} 的表头： ", df.head())
     # 统计各label对应的样本数（按数量降序排列）
@@ -550,7 +550,7 @@ def prepare_datasets(model_name='./models/chinese-roberta-wwm-ext'):
     assert train_df['label'].max() == (num_labels-1), "标签需转换为0-(num_labels)的连续整数"
 
     # 1. 在内存中创建小型子集
-    mini_df = create_mini_dataset_in_memory(
+    mini_df = create_mini_dataset_fast(
         original_file='./data/THUCNews-mini/train.txt',
         max_samples=max_samples
     )
