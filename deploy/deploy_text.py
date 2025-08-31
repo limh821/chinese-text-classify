@@ -7,11 +7,12 @@
     3、如果输入带user_uuid，则输出OUTPUT_FILENAME中也将带上与输入中text对应的user_uuid（程序会自动保证 text --> user_uuid的映射关系）
     4、包含一个基于THUCNews-mini 测试集的模型加载正确性的测试（模型参数文件也需要是基于THUCNews-mini 训练集训练的才行），输出准确率大于50%即表示模型正确加载（否则随机预测的准确率只有不到20%），
     如果不需要做模型加载正确性测试，可以设置TEST_MODEL_LOADING_WITH_THUCNEWS_MINI_DATASET_FLAG为False，同时设置SKIP_TEST_FLAG为True。
+    5、输出表结构固定为：
+        user_uuid,text,prob_class_0,prob_class_1,prob_class_2,prob_class_3,prob_class_4,prob_class_5,prob_class_6,prob_class_7,prob_class_8,prob_class_9,pred_label,pred_class_name,entropy
 
     by 李明华，2025-08-31.
 
 '''
-
 
 import torch
 import torch.nn as nn
@@ -27,6 +28,7 @@ from tqdm import tqdm
 import argparse
 from datetime import datetime
 from sklearn.metrics import accuracy_score, classification_report
+import json
 
 # 检查GPU可用性
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -36,11 +38,11 @@ print(f"Using device: {DEVICE}")
 # 训练好的模型的存放路径
 MODEL_PATH = "./models/deployment_model"
 # 测试集路径（用于验证模型加载是否正确）
-TEST_SET_PATH = "./data/THUCNews-mini/test.txt"  # 修改为您的测试集路径
+TEST_SET_PATH = "./data/THUCNews-mini-full/cnews.test.txt"  # 修改为您的测试集路径
 BATCH_SIZE = 16  # 根据GPU卡显存大小调整
 # 输入与输出
-INPUT_ROOT_PATH = "./data"
-INPUT_FILENAME = 'input_texts_with_useruuid.csv'
+INPUT_ROOT_PATH = "./data/THUCNews-mini-full"
+INPUT_FILENAME = 'cnews.test.without_uuid.csv'
 INPUT = os.path.join(INPUT_ROOT_PATH, INPUT_FILENAME)
 OUTPUT_ROOT_PATH = "./outputs"
 OUTPUT_FILENAME = 'all_text_samples_info.csv'
@@ -49,7 +51,8 @@ OUTPUT = os.path.join(OUTPUT_ROOT_PATH, OUTPUT_FILENAME)
 # 是否需要利用THUCNews-mini测试集检验模型是否正确且完整地加载（前提是模型必须要是使用THUCNews-mini训练集进行训练的才有效）
 TEST_MODEL_LOADING_WITH_THUCNEWS_MINI_DATASET_FLAG = False
 # 是否跳过模型测试
-SKIP_TEST_FLAG = True
+SKIP_TEST_FLAG = True if TEST_MODEL_LOADING_WITH_THUCNEWS_MINI_DATASET_FLAG==False else True
+
 
 class TextClassificationDeployer:
     def __init__(self, model_path, device=DEVICE):
@@ -65,7 +68,8 @@ class TextClassificationDeployer:
         self.tokenizer = None
         self.model = None
         self.num_labels = None
-        self.category_map = None
+        self.id_to_label = None
+        self.label_to_id = None
 
         # 初始化模型和分词器
         self._load_model_and_tokenizer()
@@ -86,7 +90,28 @@ class TextClassificationDeployer:
         config = AutoConfig.from_pretrained(self.model_path)
         self.num_labels = config.num_labels
 
-        # 加载模型（参考训练脚本的方法）
+        # 从配置文件加载标签映射信息
+        config_path = os.path.join(self.model_path, "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+
+            # 获取标签映射信息
+            id2label = config_data.get('id2label', {})
+            label2id = config_data.get('label2id', {})
+
+            # 转换id2label的键为整数
+            self.id_to_label = {int(k): v for k, v in id2label.items()}
+            self.label_to_id = {k: int(v) for k, v in label2id.items()}
+
+            print(f"从配置文件加载标签映射: {self.id_to_label}")
+        else:
+            # 如果没有配置文件，使用默认映射
+            print("警告: 未找到config.json文件，使用默认标签映射")
+            self.id_to_label = {i: f"类别_{i}" for i in range(self.num_labels)}
+            self.label_to_id = {f"类别_{i}": i for i in range(self.num_labels)}
+
+        # 加载模型
         self.model = AutoModelForSequenceClassification.from_pretrained(
             self.model_path,
             config=config
@@ -95,14 +120,7 @@ class TextClassificationDeployer:
         self.model.to(self.device)
         self.model.eval()
 
-        # 定义类别映射（根据您的实际类别修改）
-        self.category_map = {
-            0: "财经", 1: "房产", 2: "教育", 3: "科技",
-            4: "军事", 5: "汽车", 6: "体育", 7: "游戏",
-            8: "娱乐", 9: "政治"
-        }
-
-        # 验证模型是否正确加载（参考训练脚本的verify_model_loading）
+        # 验证模型是否正确加载
         print("\n=== 模型加载验证 ===")
 
         # 检查分类头权重（判断是否与训练模型一致）
@@ -111,52 +129,68 @@ class TextClassificationDeployer:
             classifier_norm = torch.norm(classifier_weight).item()
             print(f"分类头权重范数: {classifier_norm:.4f}")
 
-        # # 检查LoRA层是否存在（非必需）
-        # has_lora = any('lora' in name.lower() for name, _ in self.model.named_parameters())
-        # print(f"包含LoRA层: {has_lora}")
-
         # 测试一条样本验证模型功能
         test_text = "苹果发布新款iPhone"
         test_pred, test_probs = self.predict_single_text(test_text)
         print(f"测试文本: '{test_text}'")
-        print(f"预测结果: {test_pred}")
+        print(f"预测结果: {self.id_to_label.get(test_pred, f'未知类别_{test_pred}')}")
         print(f"各类别概率: {test_probs.round(4)}")
 
         load_time = time.time() - start_time
         print(f"模型加载验证完成，共 {self.num_labels} 个类别，耗时: {load_time:.2f} 秒")
-        print(f"类别映射: {self.category_map}")
 
     def load_THUCNews_test(self, file_path):
-        """ 加载CSV数据并分割为训练集和验证集 """
-        # 读取Tab分隔的.txt文件
-        test_df = pd.read_csv(file_path, sep='\t', header=None, nrows=1000, names=['text', 'label'])
+        """加载THUCNews测试集数据（支持label在前、text在后、tab分隔、无表头格式）"""
+        try:
+            # 读取Tab分隔的.txt文件，label在前，text在后，无表头
+            test_df = pd.read_csv(file_path, sep='\t', header=None, names=['label', 'text'])
 
-        print(f"测试集 {file_path} 的表头： ", test_df.head())
-        # 统计各label对应的样本数（按数量降序排列）
-        label_counts = test_df['label'].value_counts()
-        # 打印结果
-        print("\n各标签的样本数量统计：")
-        print(label_counts)
-        # 更详细的统计（包括百分比）
-        total_samples = len(test_df)
-        label_stats = test_df['label'].value_counts().reset_index()
-        label_stats.columns = ['label', 'count']
-        label_stats['percentage'] = (label_stats['count'] / total_samples * 100).round(2)
-        print("\n详细的标签分布统计：")
-        print(label_stats)
+            print(f"测试集 {file_path} 的表头： ")
+            print(test_df.head())
 
-        print(f"测试集大小: 总共 {len(test_df)} 条")
+            # 统计各label对应的样本数（按数量降序排列）- 使用原始中文标签
+            label_counts = test_df['label'].value_counts()
+            print("\n各标签的样本数量统计（中文标签）：")
+            print(label_counts)
 
-        # 统计标签分布
-        print("\n测试集标签分布:")
-        print(test_df['label'].value_counts())
+            # 更详细的统计（包括百分比）- 使用中文标签
+            total_samples = len(test_df)
+            label_stats = test_df['label'].value_counts().reset_index()
+            label_stats.columns = ['label_name', 'count']
+            label_stats['percentage'] = (label_stats['count'] / total_samples * 100).round(2)
+            print("\n详细的标签分布统计（中文标签）：")
+            print(label_stats)
 
-        return test_df
+            print(f"测试集大小: 总共 {len(test_df)} 条")
+
+            # 统计标签分布 - 使用中文标签
+            print("\n测试集标签分布:")
+            print(test_df['label'].value_counts())
+
+            # 将中文标签转换为数字标签（使用模型配置文件中的映射）
+            if self.label_to_id:
+                # 过滤掉不在映射中的标签
+                valid_labels = test_df['label'].isin(self.label_to_id.keys())
+                if not valid_labels.all():
+                    invalid_count = (~valid_labels).sum()
+                    print(f"警告: 测试集中有 {invalid_count} 条样本的标签不在训练集的标签映射中")
+                    test_df = test_df[valid_labels]
+
+                test_df['label_id'] = test_df['label'].map(self.label_to_id)
+                print(f"成功将中文标签转换为数字标签，有效样本数: {len(test_df)}")
+            else:
+                print("错误: 没有可用的标签映射信息")
+                return None
+
+            return test_df
+
+        except Exception as e:
+            print(f"加载测试集失败: {e}")
+            return None
 
     def test_model_loading(self, test_file_path, batch_size=32):
         """
         测试模型加载是否正确，使用带标签的测试集验证准确率
-        这个函数可以快速注释掉，不影响主要部署功能
         """
         print("\n" + "=" * 60)
         print("开始测试模型加载正确性...")
@@ -170,19 +204,19 @@ class TextClassificationDeployer:
         # 加载测试集
         try:
             test_df = self.load_THUCNews_test(test_file_path)
+            if test_df is None or len(test_df) == 0:
+                print("测试集加载失败或为空")
+                return
+
             print(f"成功加载测试集: {len(test_df)} 条样本")
         except Exception as e:
             print(f"加载测试集失败: {e}")
             return
 
-        # 清理测试数据：过滤掉NaN标签和空文本
+        # 清理测试数据
         original_count = len(test_df)
-        test_df = test_df.dropna(subset=['label'])  # 移除NaN标签
-        test_df = test_df[test_df['label'].apply(lambda x: str(x).isdigit())]  # 确保标签是数字
-        test_df['label'] = test_df['label'].astype(int)  # 转换为整数
-
-        # 过滤空文本
-        test_df = test_df[test_df['text'].notna() & (test_df['text'].str.len() > 0)]
+        test_df = test_df.dropna(subset=['label_id'])  # 移除NaN标签
+        test_df = test_df[test_df['text'].notna() & (test_df['text'].str.len() > 0)]  # 过滤空文本
 
         if len(test_df) < original_count:
             print(f"过滤掉 {original_count - len(test_df)} 条无效样本")
@@ -195,7 +229,7 @@ class TextClassificationDeployer:
 
         # 创建测试数据集
         test_texts = test_df['text'].tolist()
-        test_labels = test_df['label'].values
+        test_labels = test_df['label_id'].values
 
         # 批量预测
         predictions = self.predict_batch(test_texts, batch_size)
@@ -226,23 +260,26 @@ class TextClassificationDeployer:
         print(f"\n测试集准确率: {accuracy:.4f}")
         print(f"有效样本数: {len(valid_true_labels)}")
 
-        # 输出各类别统计
+        # 输出各类别统计（使用中文标签名称）
         print("\n各类别分布 (真实标签):")
         unique_labels = np.unique(valid_true_labels)
         for label in unique_labels:
             count = sum(1 for true_label in valid_true_labels if true_label == label)
-            print(f"  类别 {label}: {count} 条")
+            label_name = self.id_to_label.get(label, f"未知类别_{label}")
+            print(f"  类别 {label_name}: {count} 条")
 
         # 检查准确率是否合理
         if accuracy < 0.5:
             print(f"⚠️  警告: 准确率较低 ({accuracy:.4f})，可能模型加载有问题")
             # 输出一些错误样本用于调试
-            print("\n前5个错误预测样本:")
+            print("\n前3个错误预测样本:")
             error_count = 0
             for i in range(min(5, len(valid_true_labels))):
                 if valid_true_labels[i] != valid_pred_labels[i]:
+                    true_label_name = self.id_to_label.get(valid_true_labels[i], f"未知类别_{valid_true_labels[i]}")
+                    pred_label_name = self.id_to_label.get(valid_pred_labels[i], f"未知类别_{valid_pred_labels[i]}")
                     print(f"  文本: {test_texts[valid_indices[i]][:50]}...")
-                    print(f"  真实: {valid_true_labels[i]}, 预测: {valid_pred_labels[i]}")
+                    print(f"  真实: {true_label_name}, 预测: {pred_label_name}")
                     print("-" * 40)
                     error_count += 1
                     if error_count >= 3:
@@ -257,7 +294,7 @@ class TextClassificationDeployer:
         return accuracy
 
     def predict_single_text(self, text):
-        """预测单条文本（参考训练脚本的predict_example）"""
+        """预测单条文本"""
         self.model.eval()
         inputs = self.tokenizer(
             text,
@@ -288,14 +325,7 @@ class TextClassificationDeployer:
 
     def predict_batch(self, texts, batch_size=32):
         """
-        批量预测文本分类（参考训练脚本的test_model_lora）
-
-        参数:
-            texts: 文本列表
-            batch_size: 批处理大小
-
-        返回:
-            results: 预测结果列表，每个元素为字典
+        批量预测文本分类
         """
         results = []
 
@@ -315,7 +345,7 @@ class TextClassificationDeployer:
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
 
-                # 前向传播（参考训练脚本的test_model_lora）
+                # 前向传播
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask
@@ -326,7 +356,7 @@ class TextClassificationDeployer:
                 probs = torch.nn.functional.softmax(logits, dim=1)
                 preds = torch.argmax(logits, dim=1)
 
-                # 计算熵（不确定性度量）- 参考训练脚本
+                # 计算熵（不确定性度量）
                 entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=1)
 
                 # 转换为numpy
@@ -336,11 +366,11 @@ class TextClassificationDeployer:
 
                 # 处理每个样本的结果
                 for i in range(len(batch_preds)):
+                    pred_label = int(batch_preds[i])
                     result = {
                         'probabilities': batch_probs[i],
-                        'pred_label': int(batch_preds[i]),  # 确保是整数
-                        'pred_class_name': self.category_map.get(int(batch_preds[i]),
-                                                                 f"未知类别_{int(batch_preds[i])}"),
+                        'pred_label': pred_label,
+                        'pred_class_name': self.id_to_label.get(pred_label, f"未知类别_{pred_label}"),
                         'entropy': batch_entropy[i]
                     }
                     results.append(result)
@@ -350,7 +380,6 @@ class TextClassificationDeployer:
     def detect_file_format(self, file_path):
         """
         检测文件格式和列信息
-        返回: (has_user_uuid, separator)
         """
         try:
             # 先尝试tab分隔
@@ -379,11 +408,6 @@ class TextClassificationDeployer:
     def process_input_file(self, input_file_path, output_file_path, batch_size=32):
         """
         处理输入文件并进行分类预测
-
-        参数:
-            input_file_path: 输入文件路径
-            output_file_path: 输出文件路径
-            batch_size: 批处理大小
         """
         print(f"正在读取输入文件: {input_file_path}")
         read_start_time = time.time()
@@ -496,7 +520,7 @@ class TextClassificationDeployer:
         return result_df, has_user_uuid
 
     def _generate_statistics(self, output_file_path, result_df, has_user_uuid):
-        """生成统计信息"""
+        """生成统计信息（使用中文标签名称）"""
         print("\n" + "=" * 50)
         print("分类结果统计")
         print("=" * 50)
@@ -509,17 +533,17 @@ class TextClassificationDeployer:
             unique_users = result_df['user_uuid'].nunique()
             print(f"唯一用户数: {unique_users}")
             non_null_users = result_df['user_uuid'].notna().sum()
-            print(f"有user_uuid的样本数: {non_null_users} ({non_null_users/total_count*100:.2f}%)")
+            print(f"有user_uuid的样本数: {non_null_users} ({non_null_users / total_count * 100:.2f}%)")
         else:
             print("user_uuid列: 全部为空")
 
-        # 各类别统计
+        # 各类别统计（使用中文标签名称）
         print("\n各类别分布:")
         class_distribution = result_df['pred_label'].value_counts().sort_index()
         for class_idx, count in class_distribution.items():
-            class_name = self.category_map.get(class_idx, f"未知类别_{class_idx}")
+            class_name = self.id_to_label.get(class_idx, f"未知类别_{class_idx}")
             percentage = (count / total_count) * 100
-            print(f"  类别 {class_idx}({class_name}): {count} 条 ({percentage:.2f}%)")
+            print(f"  类别 {class_name}: {count} 条 ({percentage:.2f}%)")
 
         # 熵统计
         avg_entropy = result_df['entropy'].mean()
@@ -549,16 +573,16 @@ class TextClassificationDeployer:
             f.write(f"总样本数: {total_count}\n")
             if has_user_uuid:
                 f.write(f"唯一用户数: {unique_users}\n")
-                f.write(f"有user_uuid的样本数: {non_null_users} ({non_null_users/total_count*100:.2f}%)\n")
+                f.write(f"有user_uuid的样本数: {non_null_users} ({non_null_users / total_count * 100:.2f}%)\n")
             else:
                 f.write("user_uuid列: 全部为空\n")
             f.write("\n")
 
             f.write("各类别分布:\n")
             for class_idx, count in class_distribution.items():
-                class_name = self.category_map.get(class_idx, f"未知类别_{class_idx}")
+                class_name = self.id_to_label.get(class_idx, f"未知类别_{class_idx}")
                 percentage = (count / total_count) * 100
-                f.write(f"  类别 {class_idx}({class_name}): {count} 条 ({percentage:.2f}%)\n")
+                f.write(f"  类别 {class_name}: {count} 条 ({percentage:.2f}%)\n")
 
             f.write(f"\n不确定性统计:\n")
             f.write(f"  平均熵: {avg_entropy:.4f}\n")
@@ -672,6 +696,8 @@ def main():
     else:
         print("处理失败!")
 
+
 if __name__ == "__main__":
     main()
+
 

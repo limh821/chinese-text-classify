@@ -40,6 +40,9 @@
     对分层抽样模块做了优化，提升了百万级文本的分层抽样速度。
     by 李明华，2025-08-29.
 
+    基于标签修正后的训练集和测试集，进行重新训练和测试。
+    by 李明华，2025-08-31.
+
 '''
 
 
@@ -675,8 +678,6 @@ def create_lora_model(num_labels, pretrained_path, lora_config=None):
     return lora_model.to(device)
 
 
-
-
 def evaluate_model(model, data_loader, criterion):
     """评估模型性能"""
     model.eval()
@@ -1011,10 +1012,15 @@ def predict_category(model, tokenizer, text, device):
         pred = torch.argmax(probs, dim=1).item()
 
     # THUCNews的10个类别（示例，需替换为您的实际类别名）
+    # category_map = {
+    #     0: "财经", 1: "房产", 2: "教育", 3: "科技",
+    #     4: "军事", 5: "汽车", 6: "体育", 7: "游戏",
+    #     8: "娱乐", 9: "政治"
+    # }
     category_map = {
-        0: "财经", 1: "房产", 2: "教育", 3: "科技",
-        4: "军事", 5: "汽车", 6: "体育", 7: "游戏",
-        8: "娱乐", 9: "政治"
+        0: "体育", 1: "娱乐", 2: "家具", 3: "房产",
+        4: "教育", 5: "时尚", 6: "时政", 7: "游戏",
+        8: "科技", 9: "财经"
     }
     # 测试情感分类
     # category_map = {0: "Negative", 1: "Neutral", 2: "Positive"}
