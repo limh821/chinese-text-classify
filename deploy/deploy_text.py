@@ -3,8 +3,9 @@
 
     包含如下功能：
     1、支持输入数据input_texts_xxx.csv带或不带user_uuid
-    2、如果输入带user_uuid，则输出OUTPUT_FILENAME中也将带上与输入中text对应的user_uuid（程序会自动保证 text --> user_uuid的映射关系）
-    3、包含一个基于THUCNews-mini 测试集的模型加载正确性的测试（模型参数文件也需要是基于THUCNews-mini 训练集训练的才行），输出准确率大于50%即表示模型正确加载（否则随机预测的准确率只有不到20%），
+    2、无论输入文件是否包含user_uuid列，输出文件中都会包含user_uuid列（如果不带则为空值）
+    3、如果输入带user_uuid，则输出OUTPUT_FILENAME中也将带上与输入中text对应的user_uuid（程序会自动保证 text --> user_uuid的映射关系）
+    4、包含一个基于THUCNews-mini 测试集的模型加载正确性的测试（模型参数文件也需要是基于THUCNews-mini 训练集训练的才行），输出准确率大于50%即表示模型正确加载（否则随机预测的准确率只有不到20%），
     如果不需要做模型加载正确性测试，可以设置TEST_MODEL_LOADING_WITH_THUCNEWS_MINI_DATASET_FLAG为False，同时设置SKIP_TEST_FLAG为True。
 
     by 李明华，2025-08-31.
@@ -46,9 +47,9 @@ OUTPUT_FILENAME = 'all_text_samples_info.csv'
 OUTPUT = os.path.join(OUTPUT_ROOT_PATH, OUTPUT_FILENAME)
 
 # 是否需要利用THUCNews-mini测试集检验模型是否正确且完整地加载（前提是模型必须要是使用THUCNews-mini训练集进行训练的才有效）
-TEST_MODEL_LOADING_WITH_THUCNEWS_MINI_DATASET_FLAG = True
+TEST_MODEL_LOADING_WITH_THUCNEWS_MINI_DATASET_FLAG = False
 # 是否跳过模型测试
-SKIP_TEST_FLAG = False
+SKIP_TEST_FLAG = True
 
 class TextClassificationDeployer:
     def __init__(self, model_path, device=DEVICE):
@@ -104,15 +105,15 @@ class TextClassificationDeployer:
         # 验证模型是否正确加载（参考训练脚本的verify_model_loading）
         print("\n=== 模型加载验证 ===")
 
-        # 检查分类头权重
+        # 检查分类头权重（判断是否与训练模型一致）
         if hasattr(self.model, 'classifier'):
             classifier_weight = self.model.classifier.weight.data
             classifier_norm = torch.norm(classifier_weight).item()
             print(f"分类头权重范数: {classifier_norm:.4f}")
 
-        # 检查LoRA层是否存在
-        has_lora = any('lora' in name.lower() for name, _ in self.model.named_parameters())
-        print(f"包含LoRA层: {has_lora}")
+        # # 检查LoRA层是否存在（非必需）
+        # has_lora = any('lora' in name.lower() for name, _ in self.model.named_parameters())
+        # print(f"包含LoRA层: {has_lora}")
 
         # 测试一条样本验证模型功能
         test_text = "苹果发布新款iPhone"
@@ -394,7 +395,7 @@ class TextClassificationDeployer:
 
         # 读取输入文件
         try:
-            df_input = pd.read_csv(input_file_path, nrows=1000, sep=separator, encoding='utf-8')
+            df_input = pd.read_csv(input_file_path, sep=separator, encoding='utf-8')
         except Exception as e:
             print(f"读取文件失败: {e}")
             return None
@@ -454,21 +455,27 @@ class TextClassificationDeployer:
         }
         pred_df = pd.DataFrame(pred_info)
 
-        # 根据是否有user_uuid列来构建结果DataFrame
+        # 构建结果DataFrame - 确保始终包含user_uuid列
         if has_user_uuid:
-            # 包含user_uuid列
+            # 包含user_uuid列，直接使用
             result_df = pd.concat([
                 df_input[['user_uuid', 'text']].reset_index(drop=True),
                 prob_df,
                 pred_df
             ], axis=1)
         else:
-            # 不包含user_uuid列
+            # 不包含user_uuid列，创建空的user_uuid列
+            empty_user_uuid = pd.Series([None] * len(df_input), name='user_uuid')
             result_df = pd.concat([
+                empty_user_uuid,
                 df_input[['text']].reset_index(drop=True),
                 prob_df,
                 pred_df
             ], axis=1)
+
+        # 确保列的顺序一致：user_uuid, text, 概率列, 预测信息列
+        column_order = ['user_uuid', 'text'] + prob_columns + ['pred_label', 'pred_class_name', 'entropy']
+        result_df = result_df[column_order]
 
         merge_time = time.time() - merge_start_time
         print(f"结果合并完成，耗时: {merge_time:.2f} 秒")
@@ -496,9 +503,15 @@ class TextClassificationDeployer:
 
         total_count = len(result_df)
         print(f"总样本数: {total_count}")
+
+        # 统计user_uuid情况
         if has_user_uuid:
             unique_users = result_df['user_uuid'].nunique()
             print(f"唯一用户数: {unique_users}")
+            non_null_users = result_df['user_uuid'].notna().sum()
+            print(f"有user_uuid的样本数: {non_null_users} ({non_null_users/total_count*100:.2f}%)")
+        else:
+            print("user_uuid列: 全部为空")
 
         # 各类别统计
         print("\n各类别分布:")
@@ -536,6 +549,9 @@ class TextClassificationDeployer:
             f.write(f"总样本数: {total_count}\n")
             if has_user_uuid:
                 f.write(f"唯一用户数: {unique_users}\n")
+                f.write(f"有user_uuid的样本数: {non_null_users} ({non_null_users/total_count*100:.2f}%)\n")
+            else:
+                f.write("user_uuid列: 全部为空\n")
             f.write("\n")
 
             f.write("各类别分布:\n")
@@ -651,15 +667,10 @@ def main():
 
         # 显示前几条结果
         print("\n前5条预测结果:")
-        if has_user_uuid:
-            display_cols = ['user_uuid', 'text', 'pred_class_name', 'entropy']
-        else:
-            display_cols = ['text', 'pred_class_name', 'entropy']
-
+        display_cols = ['user_uuid', 'text', 'pred_class_name', 'entropy']
         print(result_df[display_cols].head().to_string(index=False))
     else:
         print("处理失败!")
-
 
 if __name__ == "__main__":
     main()

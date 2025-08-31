@@ -18,6 +18,7 @@ venv/
 # --- 其他个性化忽略项 ---
 # 忽略完整数据
 full_data/
+data/THUCNews-mini-full
 
 # 忽略输出
 outputs/
