@@ -22,6 +22,8 @@ data/THUCNews-mini-full
 
 # 忽略输出
 outputs/
+text_deployment/
+
 
 # 其他无关紧要的文件 
 final_model/
