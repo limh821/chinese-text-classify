@@ -46,7 +46,7 @@ output_test_dataset_filename_slim = 'mini_test_set_slim_' + classname + '.csv'
 
 # 数据格式配置
 # 如果输入文件包含表头，设置为True
-HAS_HEADER = False
+HAS_HEADER = True
 # 如果没有表头，需要在此指定列名（按实际顺序）
 custom_column_names = ['content_tag', 'content', 'other_column1', 'other_column2']  # 根据实际情况修改
 
