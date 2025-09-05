@@ -36,6 +36,12 @@ output_dir = '../data/preprocess/'
 # 训练集和测试集输出路径
 train_data_path = os.path.join(output_dir, 'train_data_path')
 test_data_path = os.path.join(output_dir, 'test_data_path')
+# 输出文件名
+classname = 'all'
+output_train_dataset_filename_full = 'mini_train_set_with_all_columns_' + classname + '.csv'
+output_test_dataset_filename_full = 'mini_test_set_with_all_columns_' + classname + '.csv'
+output_train_dataset_filename_slim = 'mini_train_set_slim_' + classname + '.csv'
+output_test_dataset_filename_slim = 'mini_test_set_slim_' + classname + '.csv'
 
 # 数据格式配置
 # 如果输入文件包含表头，设置为True
@@ -263,8 +269,8 @@ def save_datasets(train_df, test_df, output_dir):
     os.makedirs(test_dir, exist_ok=True)
 
     # 保存完整数据集（包含所有列）
-    train_full_path = os.path.join(train_dir, 'mini_train_set_with_all_columns.csv')
-    test_full_path = os.path.join(test_dir, 'mini_test_set_with_all_columns.csv')
+    train_full_path = os.path.join(train_dir, output_train_dataset_filename_full)
+    test_full_path = os.path.join(test_dir, output_test_dataset_filename_full)
 
     train_df.to_csv(train_full_path, sep='\t', index=False)
     test_df.to_csv(test_full_path, sep='\t', index=False)
@@ -274,11 +280,15 @@ def save_datasets(train_df, test_df, output_dir):
 
     # 保存精简数据集（只包含label和text）
     if 'label' in train_df.columns and 'text' in train_df.columns:
-        train_slim_path = os.path.join(train_dir, 'mini_train_set_slim.csv')
-        test_slim_path = os.path.join(test_dir, 'mini_test_set_slim.csv')
+        train_slim_path = os.path.join(train_dir, output_train_dataset_filename_slim)
+        test_slim_path = os.path.join(test_dir, output_test_dataset_filename_slim)
 
-        train_df[['label', 'text']].to_csv(train_slim_path, sep='\t', index=False, header=False)
-        test_df[['label', 'text']].to_csv(test_slim_path, sep='\t', index=False, header=False)
+        # # slim格式的输出不带表头
+        # train_df[['label', 'text']].to_csv(train_slim_path, sep='\t', index=False, header=False)
+        # test_df[['label', 'text']].to_csv(test_slim_path, sep='\t', index=False, header=False)
+        # 带表头的slim格式输出
+        train_df[['label', 'text']].to_csv(train_slim_path, sep='\t', index=False)
+        test_df[['label', 'text']].to_csv(test_slim_path, sep='\t', index=False)
 
         print(f"精简训练集已保存: {train_slim_path}")
         print(f"精简测试集已保存: {test_slim_path}")

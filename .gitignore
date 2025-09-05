@@ -29,6 +29,18 @@ text_deployment/
 final_model/
 final_model_components/
 other_models/
+data/preprocess/concatenated/
+data/preprocess/test_data_path/mini_test_set_slim_all.csv
+data/preprocess/test_data_path/mini_test_set_slim_all2.csv
+data/preprocess/test_data_path/mini_test_set_with_all_columns_all.csv
+data/preprocess/test_data_path/mini_test_set_with_all_columns_all2.csv
+data/preprocess/train_data_path/mini_train_set_slim_all.csv
+data/preprocess/train_data_path/mini_train_set_slim_all2.csv
+data/preprocess/train_data_path/mini_train_set_with_all_columns_all.csv
+data/preprocess/train_data_path/mini_train_set_with_all_columns_all2.csv
+
+
+
 
 # 大于100MB的模型文件
 models/
@@ -38,3 +50,4 @@ models/
 models/chinese-roberta-wwm-ext/pytorch_model.bin
 best_text_model.bin
 *.bin
+
