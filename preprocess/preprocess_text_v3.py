@@ -19,6 +19,7 @@
     11、打印输出输入文件是否带表头，所有表头的名字，打印3条原始数据以用于检查读取正确与否，抽样前后总样本和各类标签样本的数目，打印3条抽样后的数据以用于检查内容是否正确，等信息。
 
     修改 by 李明华，2025-09-03，完善上述抽样功能调整，能一次性生成训练集和测试集，并智能处理自定义表头。
+    修改 by 李明华，2025-09-03，增加原始数据中text内容的去重，先去重再进行抽样，确保不会因数据重复导致最终生成的训练集和测试集的比例和tran_test_ratio要求的差太远。
 
 '''
 
@@ -208,6 +209,33 @@ def stratified_sample(df, label_col, n_samples, random_state=None):
 
     return result_df
 
+def remove_duplicate_texts_within_dataset(df):
+    """移除数据集内部的重复文本，相同text的记录只保留第一条"""
+    original_count = len(df)
+
+    # 创建文本的清洗版本用于比较
+    df['cleaned_text'] = df['text'].astype(str).str.strip()
+
+    # 找出重复的文本（保留第一条，标记后续重复的）
+    duplicate_mask = df.duplicated(subset=['cleaned_text'], keep='first')
+    duplicate_count = duplicate_mask.sum()
+
+    if duplicate_count > 0:
+        print(f"发现数据集内部 {duplicate_count} 条重复文本")
+        print("重复文本示例:")
+        duplicate_samples = df[duplicate_mask].head(3)
+        for _, row in duplicate_samples.iterrows():
+            print(f"  标签: {row['label']}, 文本: {row['text'][:50]}...")
+
+        # 移除重复文本（只保留第一条）
+        df = df[~duplicate_mask].copy()
+        print(f"移除内部重复文本后剩余 {len(df)} 条数据")
+    else:
+        print("✅ 未发现数据集内部重复文本")
+
+    # 移除临时列
+    df = df.drop(columns=['cleaned_text'])
+    return df, duplicate_count
 
 def create_train_test_datasets(input_file, max_samples, split_ratio, random_state, do_remove_duplicates=True):
     """
@@ -216,6 +244,16 @@ def create_train_test_datasets(input_file, max_samples, split_ratio, random_stat
     # 读取原始数据
     df = load_data(input_file, HAS_HEADER, custom_column_names)
     num_classes = print_data_info(df, "原始数据信息")
+
+    # text内容去重
+    print("\n=== 原始数据集text内容去重 ===")
+    df, internal_duplicate_count = remove_duplicate_texts_within_dataset(df)
+    if len(df) == 0:
+        print("错误: 去重后数据集为空！")
+        return pd.DataFrame(), pd.DataFrame(), internal_duplicate_count
+    else:
+        # 更新一下实际抽样数，保证不要超过去重后的总样本数目
+        max_samples = min(max_samples, len(df))
 
     # 计算训练集和测试集大小
     train_size = int(max_samples * split_ratio)
